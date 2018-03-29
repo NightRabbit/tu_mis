@@ -1,0 +1,546 @@
+<?php
+
+/*
+function work_entry_loader_cron(){
+
+  $cron_last = variable_get('cron_last', time());
+
+  // runt the script once a day
+  if( date('ymd', $cron_last) != date('ymd', time() ) ){ 
+      // Code here
+    }
+
+    $address = variable_get('pattaya_address');
+
+
+    echo("HI");
+}
+*/
+
+/*
+function generate_work_entry()
+{
+  // query all user
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'user');
+
+  $result = $query->execute();  
+
+  if (isset($result['user'])) 
+  {
+    $entity_ids = array_keys($result['user']);
+    $entity_items = entity_load('user', $entity_ids);
+    //var_dump($entity_items[0]->uid);
+    //var_dump(count($entity_items));
+
+    // for each user, check for existing work entry everday for Feb - Dec
+    $begin = new DateTime('2018-02-01');
+    $end = new DateTime('2018-12-31');
+
+    $interval = DateInterval::createFromDateString('1 day');
+    $period = new DatePeriod($begin, $interval, $end);
+
+    foreach ($period as $dt) {
+        $search_date = $dt->format("Y-m-d");
+        echo($search_date."</br>");
+
+        // count($entity_items)
+        for ($i = 0; $i < count($entity_items); $i++) 
+        {
+          $user = $entity_items[$i];
+          $uid = $user->uid;
+          
+
+          $query = new EntityFieldQuery();
+          $query->entityCondition('entity_type', 'node');
+          $query->entityCondition('bundle', 'work_entry');
+          $query->fieldCondition('field_log_date', 'value', db_like($search_date) . '%', 'like'); // Equal to "starts with"
+          $query->propertyCondition('uid', $user->uid);
+          $query->addMetaData('account', user_load(1));
+
+          $result = $query->execute();  
+
+          if (isset($result['node'])) 
+          {
+            $work_entry_ids = array_keys($result['node']);
+            $work_entry_items = entity_load('node', $work_entry_ids);
+            echo(" NODE FOUND ");
+          } 
+          else
+          {
+            echo("NOOOO NODE FOUND ");
+            echo($uid);
+            echo($search_date);
+            //echo("NO WORK ENTRY".$user->uid."<<");
+            create_work_entry_node($uid,$dt);
+          }
+        }
+
+        echo "</br>";
+    }
+
+  } 
+  // if no entry found for which day, create a new one for it
+}
+*/
+
+function create_work_entry_node($uid,$log_date) 
+{
+  // entity_create replaces the procedural steps in the first example of
+  // creating a new object $node and setting its 'type' and uid property
+  $values = array(
+    'type' => 'work_entry',
+    'uid' => $uid,
+    'status' => 1,
+    'comment' => 1,
+    'promote' => 0,
+  );
+  $entity = entity_create('node', $values);
+
+  // The entity is now created, but we have not yet simplified use of it.
+  // Now create an entity_metadata_wrapper around the new node entity
+  // to make getting and setting values easier
+  $ewrapper = entity_metadata_wrapper('node', $entity);
+
+  // Using the wrapper, we do not have to worry about telling Drupal
+  // what language we are using. The Entity API handles that for us.
+  $ewrapper->title->set('Auto generated worke entry log');
+
+  // Setting the body is a bit different from other properties or fields
+  // because the body can have both its complete value and its
+  // summary
+  //$my_body_content = 'A bunch of text about things that interest me';
+  //$ewrapper->body->set(array('value' => $my_body_content));
+  //$ewrapper->body->summary->set('Things that interest me');
+
+  // Entity API cannot set date field values so the 'old' method must
+  // be used
+  $entity->field_log_date[LANGUAGE_NONE][0] = array(
+     'value' => date_format($log_date, 'Y-m-d'),
+     'timezone' => 'UTC',
+     'timezone_db' => 'UTC',
+   );
+
+  // Now just save the wrapper and the entity
+  // There is some suggestion that the 'true' argument is necessary to
+  // the entity save method to circumvent a bug in Entity API. If there is
+  // such a bug, it almost certainly will get fixed, so make sure to check.
+  $ewrapper->save();
+}
+
+//-----------------------------------------------------------------------------
+
+function work_entry_loader_menu() {
+  $items = array();
+
+  $items['admin/config/system/work_entry_loader'] = array(
+    'title' => 'Work entry loader',
+    'description' => 'Configuration for work entry loader module',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('work_entry_loader_form'),
+    'access arguments' => array('administer work entry module'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  return $items;
+}
+
+function work_entry_loader_form($form, &$form_state) {
+  $form['files']['work_entry_csv_file_upload'] = [
+    '#type' => 'managed_file',
+    '#title' => t('Import ข้อมูลการทำงาน:'),
+    '#upload_validators' => [
+      'file_validate_extensions' => ['csv']
+    ],
+    '#process' => array('remove_default_upload_button'),
+    [
+      '#type' => 'submit',
+      '#value' => t('อัพโหลด')
+    ]
+  ];
+
+  return $form;
+}
+
+function work_entry_loader_form_submit($form, &$form_state) {
+  if ($form_state['values']['work_entry_csv_file_upload'] == 0) {
+    drupal_set_message(t('Please select a file'),'error');
+    return;
+  }
+
+  $file = file_load($form_state['values']['work_entry_csv_file_upload']);
+  if (!$file) {
+    drupal_set_message(t('Error while loading file'), 'error');
+    return;
+  }
+
+  try
+  {
+    $file_uri = drupal_realpath($file->uri);
+    if (file_exists($file_uri) && fopen($file_uri, 'r') !== false) {
+      process_work_entry_log_file($file_uri);
+    } else {
+      drupal_set_message(t('Error while loading file'), 'error');
+      return;
+    }
+  }
+  catch(Exception $e)
+  {
+
+  }
+}
+
+function remove_default_upload_button($element, &$form_state, $form) {
+  $element = file_managed_file_process($element, $form_state, $form);
+  $element['upload_button']['#access'] = FALSE;
+  return $element;
+}
+
+/**
+ * Implements hook_permission.
+ */
+function work_entry_loader_permission() {
+  return array(
+    'administer work entry module' => array(
+      'title' => t('Administer work entry module'),
+      'description' => t('Access the work entry module Page'),
+     ));
+}
+
+//------------------------------------------------------------------------------------------------------------------
+
+function process_work_entry_log_file($file_uri)
+{
+  $content = file_get_contents($file_uri);
+  
+  //drupal_set_message(t('DEBUG: ').$content);
+  //drupal_set_message(t('DEBUG 2').time());
+
+  $logs = convert_csv_to_array($file_uri);
+
+  $temp_user_id = -1;
+  $temp_month = "";
+
+  // process each row of the log
+  for ($row = 0; $row < count($logs); $row++) 
+  {
+    // get user id from log's username
+    $user_id = get_user_id_from_log_row($logs,$row);
+
+    // get logged date from a row
+    $csv_log_date = $logs[$row][1];
+
+    // get month of the log date
+    $csv_log_date_month = date_format($csv_log_date, 'Y-m');
+
+
+    // create work entry node for a specific user throughout a given month
+    // check if work entry for a month of for this specific user has been created or not
+    // keep the month variable, so we don't need to re-check all the time
+    if(($user_id != $temp_user_id) || ($temp_month != $csv_log_date_month))
+    {
+      generate_work_entry($user_id,$csv_log_date);
+      $temp_user_id = $user_id;
+      $temp_month = $csv_log_date_month;
+    }
+
+    // get work ids (array) based on user id and logged date
+    $work_entry_ids = get_work_entry_id_array_from_username_and_date($user_id,$csv_log_date);
+    
+    //drupal_set_message(t('DEBUG LOG >>>').(int)$work_entry_ids);
+
+    // load work entry node from id
+    $work_entries = entity_load('node', $work_entry_ids);
+
+    foreach($work_entries as $entry) 
+    {
+      if(!empty($entry->field_enter_time))
+      {
+        $enter = $entry->field_enter_time[LANGUAGE_NONE][0]['value'];
+        $enter = datetime::createfromformat('Y-m-d H:i:s',$enter);
+      }
+      else
+      {
+        $enter = false;
+      }
+      //drupal_set_message(t('DEBUG LOG ENTER>>>').$enter);
+
+
+      if(!empty($entry->field_leave_time))
+      {
+        $leave = $entry->field_leave_time[LANGUAGE_NONE][0]['value'];
+        $leave = datetime::createfromformat('Y-m-d H:i:s',$leave);
+      }
+      else
+      {
+        $leave = false;
+      }
+
+      //drupal_set_message(t('DEBUG LOG LEAVE UND>>>').var_export($entry, true));      
+      //drupal_set_message(t('DEBUG LOG LEAVE>>>').$leave);
+
+      /*
+      drupal_set_message(t('Check1: ').var_export($enter,true));
+        drupal_set_message(t('Check2: ').var_export($leave,true));
+        drupal_set_message(t('Check3: ').var_export($csv_log_date,true));
+        drupal_set_message(t('Check4: ').var_export(date_format($enter, 'Y-m-d H:i:s'),true));
+        drupal_set_message(t('Check4: ').var_export(date_format($leave, 'Y-m-d H:i:s'),true));
+        drupal_set_message(t('Check5: ').var_export(date_format($csv_log_date, 'Y-m-d H:i:s'),true));
+        drupal_set_message(t('Check6: ').var_export(date_format($csv_log_date, 'Y-m-d H:i:s') != date_format($enter, 'Y-m-d H:i:s'),true));
+      */
+
+      if(!$enter && !$leave)
+      {
+        //drupal_set_message(t('DEBUG LOG LEAVE NULL AND NULL'));
+
+        // if both enter and leave is null: add to enter time
+        $entry->field_enter_time[LANGUAGE_NONE][0] = array(
+          'value' => date_format($csv_log_date, 'Y-m-d H:i:s'),
+          'timezone' => 'Asia/Bangkok',
+          'timezone_db' => 'Asia/Bangkok',
+        );
+      }
+      else if($enter && !$leave && (date_format($csv_log_date, 'Y-m-d H:i:s') != date_format($enter, 'Y-m-d H:i:s')))
+      {
+        //drupal_set_message(t('DEBUG LOG LEAVE NOT NULL AND NULL'));
+        
+              if($enter > $csv_log_date) // enter time come after, so lets switch
+              {
+                $entry->field_leave_time[LANGUAGE_NONE][0] = array(
+                'value' => date_format($enter, 'Y-m-d H:i:s'),
+                'timezone' => 'Asia/Bangkok',
+                'timezone_db' => 'Asia/Bangkok',
+                );
+
+                $entry->field_enter_time[LANGUAGE_NONE][0] = array(
+                'value' => date_format($csv_log_date, 'Y-m-d H:i:s'),
+                'timezone' => 'Asia/Bangkok',
+                'timezone_db' => 'Asia/Bangkok',
+                );
+              }
+              else if($enter < $csv_log_date)
+              {
+                $entry->field_leave_time[LANGUAGE_NONE][0] = array(
+                'value' => date_format($csv_log_date, 'Y-m-d H:i:s'),
+                'timezone' => 'Asia/Bangkok',
+                'timezone_db' => 'Asia/Bangkok',
+                );
+              }
+      }
+      else if(!$enter && $leave && (date_format($csv_log_date, 'Y-m-d H:i:s') != date_format($leave, 'Y-m-d H:i:s')))
+      {
+        //drupal_set_message(t('DEBUG LOG LEAVE NULL AND NOT NULL'));
+
+              if($leave > $csv_log_date) // enter time come after, so lets switch
+              {
+                $entry->field_enter_time[LANGUAGE_NONE][0] = array(
+                'value' => date_format($csv_log_date, 'Y-m-d H:i:s'),
+                'timezone' => 'Asia/Bangkok',
+                'timezone_db' => 'Asia/Bangkok',
+                );
+              }
+              else //if($leave <= $csv_log_date) should have the same effect
+              {
+                $entry->field_enter_time[LANGUAGE_NONE][0] = array(
+                'value' => date_format($leave, 'Y-m-d H:i:s'),
+                'timezone' => 'Asia/Bangkok',
+                'timezone_db' => 'Asia/Bangkok',
+                );
+
+                $entry->field_leave_time[LANGUAGE_NONE][0] = array(
+                'value' => date_format($csv_log_date, 'Y-m-d H:i:s'),
+                'timezone' => 'Asia/Bangkok',
+                'timezone_db' => 'Asia/Bangkok',
+                );
+              }
+      }
+      else if($enter && $leave)
+      {
+
+        //drupal_set_message(t('DEBUG LOG LEAVE NOT NULL AND NOT NULL'));
+
+              if($enter > $csv_log_date)
+              {
+                $entry->field_enter_time[LANGUAGE_NONE][0] = array(
+                'value' => date_format($csv_log_date, 'Y-m-d H:i:s'),
+                'timezone' => 'Asia/Bangkok',
+                'timezone_db' => 'Asia/Bangkok',
+                );
+              }
+
+              if($leave < $csv_log_date )
+              {
+                $entry->field_leave_time[LANGUAGE_NONE][0] = array(
+                'value' => date_format($csv_log_date, 'Y-m-d H:i:s'),
+                'timezone' => 'Asia/Bangkok',
+                'timezone_db' => 'Asia/Bangkok',
+                );
+              }
+      }
+
+            /*
+            $entry->field_enter_time[LANGUAGE_NONE][0] = array(
+                'value' => NULL,
+                'timezone' => 'Asia/Bangkok',
+                'timezone_db' => 'Asia/Bangkok',
+                );
+
+            $entry->field_leave_time[LANGUAGE_NONE][0] = array(
+                'value' => NULL,
+                'timezone' => 'Asia/Bangkok',
+                'timezone_db' => 'Asia/Bangkok',
+                );
+            */
+
+            $enter_string = "NULL";
+            if(!empty($entry->field_enter_time))
+            {
+              $enter_string = $entry->field_enter_time[LANGUAGE_NONE][0]['value'];
+            }
+
+            $leave_string = "NULL";
+            if(!empty($entry->field_leave_time))
+            {
+              $entry->field_leave_time[LANGUAGE_NONE][0]['value'];
+            }
+
+            //drupal_set_message(t('DEBUG LOG LEAVE UND>>>').var_export($entry, true));
+            drupal_set_message(t('Added log(user: '.$entry->name.', enter time: '.$enter_string.', leave time: '.$leave_string.')'));
+            
+            entity_save('node', $entry);
+    }
+
+  }
+
+}
+
+function convert_csv_to_array($file_uri)
+{
+  $handle = fopen($file_uri, "r");
+
+  $logs = array();  // an array that store each entry log (username,datetime)
+  $csv_row_index = 0; // represents the line index in the CSV file
+
+
+  // read the content
+  while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) 
+  {
+    $num = count($data);
+    $csv_row_index++;
+
+    // skip the header part of the file, go directly to the data (starting from line 5)
+    if($csv_row_index > 5)
+    {
+
+      // handle to format present by the logs (sometime with second, sometime without)
+      $logged_date = DateTime::createFromFormat('d/m/Y H:i', $data[10]);
+      if(!$logged_date)
+      {
+        $logged_date = DateTime::createFromFormat('d/m/Y H:i:s', $data[10]);
+      }
+
+      // change BE year to AD (need to fix this later, to make it more dynamic)
+      date_modify($logged_date,"-543year");
+
+      // store username (from data[1]) and datetime (from $logged_date)
+      array_push($logs,array(strtolower($data[1]),$logged_date));
+      //drupal_set_message(t('DEBUG X>').$data[1]);
+    }
+  }
+
+  return $logs;
+}
+
+function get_user_id_from_log_row($logs,$row)
+{
+  // get a username from a row
+    $logged_name = $logs[$row][0];
+
+    // fix K.Jiraporn usernam!
+    if($logged_name == "jjiraporn")
+    {
+      $logged_name = "jiraporn";
+    }
+
+    // find user ID from user name.
+    $query = new EntityFieldQuery();
+    $query->entityCondition('entity_type', 'user');
+    $query->propertyCondition('name', $logged_name);
+
+    $result = $query->execute();
+
+    //drupal_set_message(t('DEBUG XX>').$logged_name);;
+
+    // if a user with the same username is found, process his/her log
+    if (isset($result['user'])) 
+    {
+      $user_id = array_keys($result['user'])[0];
+      //drupal_set_message(t('DEBUG XX>').(int)$user_id);
+
+      return $user_id;
+    }  
+}
+
+function get_work_entry_id_array_from_username_and_date($user_id,$csv_log_date)
+{
+  // get string in this format to match date in DB (should have used  timestamp, but oh well...)
+    $csv_log_date_string = date_format($csv_log_date,"Y-m-d");  
+
+    //drupal_set_message(t('DEBUG X-X>').(int)$user_id);
+
+    // Find target work entry for that user name and date
+    $query = new EntityFieldQuery();
+    $query->entityCondition('entity_type', 'node');
+    $query->entityCondition('bundle', 'work_entry');
+    $query->fieldCondition('field_log_date', 'value', db_like($csv_log_date_string) . '%', 'like'); // Equal to "starts with"
+    $query->propertyCondition('uid', $user_id);
+    $query->addMetaData('account', user_load(1));
+
+    $result = $query->execute();  
+  
+    if (isset($result['node'])) 
+    {
+       $work_entry_ids = array_keys($result['node']);
+       //drupal_set_message(t('DEBUG LOG>').(int)$work_entry_ids);
+
+       return $work_entry_ids;
+    }
+}
+
+function generate_work_entry($user_id,$csv_log_date)
+{
+  //drupal_set_message(t('DEBUG LOG> generate_work_entry for'.$user_id." month ".date_format($csv_log_date, 'Y-m-01')));
+  
+  // for each user, check for existing work entry everday for Feb - Dec
+  $begin = new DateTime(date_format($csv_log_date, 'Y-m-01'));
+  $end = new DateTime(date_format($csv_log_date, 'Y-m-t'));
+  $end->setTime(0,0,1);     // new line
+
+  $interval = DateInterval::createFromDateString('1 day');
+  $period = new DatePeriod($begin, $interval, $end);
+    
+    foreach ($period as $dt) 
+    {
+        $search_date = $dt->format("Y-m-d");
+        //drupal_set_message(t('DEBUG LOG> search date'.$search_date));
+          
+
+        $query = new EntityFieldQuery();
+        $query->entityCondition('entity_type', 'node');
+        $query->entityCondition('bundle', 'work_entry');
+        $query->fieldCondition('field_log_date', 'value', db_like($search_date) . '%', 'like'); // Equal to "starts with"
+        $query->propertyCondition('uid', $user_id);
+        $query->addMetaData('account', user_load(1));
+
+        $result = $query->execute();  
+
+        if (!isset($result['node'])) // if found a work entry for a user at given date
+        {
+          create_work_entry_node($user_id,$dt);
+        } 
+
+    }
+
+
+  // if no entry found for which day, create a new one for it
+}

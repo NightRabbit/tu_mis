@@ -1,0 +1,6 @@
+name = Work Entry Loader
+description = This module download work entry via automated cron. 
+core = 7.x
+
+;
+configure = admin/config/system/work_entry_loader
